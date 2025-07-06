@@ -7,7 +7,7 @@ import shutil
 
 print("Запуск...")
 
-TOKEN = '6576464104:AAEs8kZIQC2hCUZfc3YdJ_ISK4eCNCqgcNE'
+TOKEN = 'тг_бот_токен'
 bot = telebot.TeleBot(TOKEN)
 user_links = {}
 user_info = {}
