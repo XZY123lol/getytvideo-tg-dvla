@@ -1,6 +1,4 @@
 # pip install -r requirements.txt
-pytelegrambotapi
-pytube3
-python-telegram-bot
-tqdm
+telebot
+yt-dlp
 requests
