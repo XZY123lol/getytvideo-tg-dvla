@@ -2,249 +2,264 @@ import telebot
 from telebot import types
 import yt_dlp
 import os
-import tempfile
-import shutil
+import time
+import threading
 
-print("Запуск...")
-
-TOKEN = 'Токен_сюда'
+TOKEN = 'токен'
 bot = telebot.TeleBot(TOKEN)
+
+BASE_TEMP_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_ddvx")
+os.makedirs(BASE_TEMP_FOLDER, exist_ok=True)
+
+TEXT_START = "👋 Привет! Отправь ссылку на YouTube или TikTok, я покажу доступные форматы."
+TEXT_CANCEL = "❌ Отмена"
+TEXT_CANCELLED = "🚫 Отменено. Отправьте новую ссылку."
+TEXT_FIRST_SEND_LINK = "❗ Сначала отправьте ссылку на YouTube или TikTok."
+TEXT_DOWNLOADING = "⏳ Скачиваем: {}"
+TEXT_ANALYZING = "🔎 Анализирую доступные форматы... ⏳"
+
 user_links = {}
 user_info = {}
+user_selected_formats = {}
+download_progress = {}
+user_subtitles_info = {}
 
-def get_info(url):
-    with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
-        return ydl.extract_info(url, download=False)
 
-def safe_filename(name):
+def safe_filename(name: str) -> str:
     return "".join(c for c in name if c.isalnum() or c in " .-_").rstrip()
 
-def download_video(url, title, format_str="bestvideo+bestaudio", folder=None):
-    folder = folder or tempfile.mkdtemp()
-    filename = safe_filename(title) + ".mp4"
-    path = os.path.join(folder, filename)
-    opts = {
-        'format': format_str,
-        'outtmpl': path,
-        'merge_output_format': 'mp4',
-        'quiet': True,
-        'writesubtitles': False,
-    }
+
+def get_info(url: str) -> dict:
+    opts = {'quiet': True}
+    if 'tiktok.com' in url:
+        opts.update({'extractor_retries': 1})
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        return ydl.extract_info(url, download=False)
+
+
+def make_format_buttons(info: dict, selected: set = None) -> types.InlineKeyboardMarkup:
+    selected = selected or set()
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    fmt_list = info.get('formats', [])
+    vq = sorted({f['height'] for f in fmt_list if f.get('vcodec') != 'none' and f.get('height')})
+    for h in vq:
+        key = f"video_{h}"
+        txt = f"🎥{h}p" + ("✅" if key in selected else "")
+        markup.add(types.InlineKeyboardButton(txt, callback_data=f"toggle_{key}"))
+    markup.add(types.InlineKeyboardButton("📝 Скачать субтитры", callback_data="download_subs"))
+    ab = sorted({int(f.get('abr', 0)) for f in fmt_list if f.get('acodec') != 'none' and f.get('abr')}, reverse=True)
+    for abr in ab:
+        key = f"audio_{abr}k"
+        txt = f"🔊{abr}k" + ("✅" if key in selected else "")
+        markup.add(types.InlineKeyboardButton(txt, callback_data=f"toggle_{key}"))
+    markup.add(
+        types.InlineKeyboardButton("📥 Скачать", callback_data="download_selected"),
+        types.InlineKeyboardButton(TEXT_CANCEL, callback_data="cancel_download")
+    )
+    return markup
+
+
+def make_subtitles_buttons(subs: dict) -> types.InlineKeyboardMarkup:
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    for lang in subs.keys():
+        markup.add(types.InlineKeyboardButton(f"🌐 {lang}", callback_data=f"sub_lang_{lang}"))
+    markup.add(
+        types.InlineKeyboardButton("🕒 Скачать с таймкодом", callback_data="sub_timed"),
+        types.InlineKeyboardButton(TEXT_CANCEL, callback_data="cancel_download")
+    )
+    return markup
+
+
+def update_progress_message_loop(chat_id, message_id, user_id):
+    while True:
+        time.sleep(1)
+        lines = []
+        finished = True
+        for fname, percent in download_progress.get(user_id, {}).items():
+            lines.append(f"{fname}: {percent}%")
+            if percent < 100:
+                finished = False
+        text = "⬇️ Прогресс скачивания:\n" + ("\n".join(lines) if lines else "(ожидание)")
+        try:
+            bot.edit_message_text(text, chat_id, message_id)
+        except:
+            pass
+        if finished:
+            break
+
+
+def download_with_progress(url, opts, chat_id, user_id, filename):
+    def hook(d):
+        status = d.get('status')
+        if status == 'downloading':
+            total = d.get('total_bytes') or d.get('total_bytes_estimate') or 1
+            downloaded = d.get('downloaded_bytes', 0)
+            pct = int(downloaded / total * 100)
+            download_progress.setdefault(user_id, {})[filename] = pct
+        elif status == 'finished':
+            download_progress.setdefault(user_id, {})[filename] = 100
+    opts['progress_hooks'] = [hook]
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([url])
-    return path, folder
+    download_progress.setdefault(user_id, {})[filename] = 100
 
-def download_audio(url, title, bitrate="128k", folder=None):
-    folder = folder or tempfile.mkdtemp()
-    filename = safe_filename(title) + ".mp3"
-    path = os.path.join(folder, filename)
-    opts = {
-        'format': 'bestaudio',
-        'outtmpl': path,
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': bitrate.replace('k', '')
-        }],
-        'quiet': True,
-        'writesubtitles': False,
-    }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        ydl.download([url])
-    return path, folder
 
-def download_subtitles(url, title, lang='en', folder=None):
-    folder = folder or tempfile.mkdtemp()
-    filename = safe_filename(title) + ".srt"
-    path = os.path.join(folder, filename)
-    opts = {
-        'writesubtitles': True,
-        'subtitleslangs': [lang],
-        'skip_download': True,
-        'outtmpl': path,
-        'quiet': True,
-    }
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([url])
-        if os.path.exists(path):
-            return path, folder
+def download_selected_formats(url: str, title: str, selected: set, chat_id, user_id):
+    out_files = []
+    download_progress.setdefault(user_id, {})
+    for key in selected:
+        if key.startswith("video_"):
+            q = key.split("_")[1]
+            out_path = os.path.join(BASE_TEMP_FOLDER, safe_filename(title) + f"_{q}p.mp4")
+            opts = {'format': f"bestvideo[height={q}]+bestaudio/best", 'outtmpl': out_path, 'merge_output_format':'mp4','quiet':True,'noplaylist':True}
+            fname = os.path.basename(out_path)
         else:
-            return None, folder
-    except Exception:
-        return None, folder
+            abr = key.split("_")[1].rstrip('k')
+            base = os.path.join(BASE_TEMP_FOLDER, safe_filename(title) + f"_{abr}k")
+            opts = {'format':'bestaudio','outtmpl':base,'postprocessors':[{'key':'FFmpegExtractAudio','preferredcodec':'mp3','preferredquality':abr}],'quiet':True,'noplaylist':True}
+            fname = os.path.basename(base) + ".mp3"
+            out_path = base + ".mp3"
+        download_progress[user_id][fname] = 0
+        download_with_progress(url, opts, chat_id, user_id, fname)
+        out_files.append(out_path)
+    return out_files
 
-def get_thumbnail_url(info):
-    thumbs = info.get('thumbnails')
-    if thumbs:
-        return thumbs[-1]['url']
-    return None
 
-def download_thumbnail(url):
-    import requests
-    try:
-        resp = requests.get(url, stream=True, timeout=10)
-        if resp.status_code == 200:
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
-            with open(tmp.name, 'wb') as f:
-                for chunk in resp.iter_content(1024):
-                    f.write(chunk)
-            return tmp.name
-    except Exception:
-        return None
+def download_subtitles_info(url: str) -> dict:
+    with yt_dlp.YoutubeDL({'quiet':True,'skip_download':True}) as ydl:
+        info = ydl.extract_info(url, download=False)
+    return {
+        **info.get('subtitles', {}),
+        **info.get('automatic_captions', {})
+    }
+
+
+def download_subtitle_file(url: str, lang: str, title: str, chat_id: int, timed: bool=False):
+    base = os.path.join(BASE_TEMP_FOLDER, safe_filename(title) + f"_{lang}")
+    vtt = base + ".vtt"
+    opts = {'writesubtitles':True,'writeautomaticsub':True,'subtitleslangs':[lang],'subtitlesformat':'vtt','skip_download':True,'outtmpl':base,'quiet':True,'noplaylist':True}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        ydl.download([url])
+    if not os.path.exists(vtt):
+        bot.send_message(chat_id, "⚠️ Субтитры не найдены.")
+        return
+    if timed:
+        txt = base + "_timed.txt"
+        with open(vtt, 'r', encoding='utf-8') as vf, open(txt, 'w', encoding='utf-8') as tf:
+            for line in vf:
+                if "-->" in line or (line.strip() and not line.strip().isdigit()):
+                    tf.write(line)
+        with open(txt, 'rb') as f:
+            bot.send_document(chat_id, f, caption=f"🕒 Субтитры с таймкодом ({lang}) для {title}")
+        os.remove(txt)
+        os.remove(vtt)
+    else:
+        with open(vtt, 'rb') as f:
+            bot.send_document(chat_id, f, caption=f"📝 Субтитры ({lang}) для {title}")
+        os.remove(vtt)
 
 @bot.message_handler(commands=['start'])
-def start_command(message):
-    bot.reply_to(message, "Привет! Отправь ссылку на YouTube (или плейлист), я покажу доступные форматы.")
+def cmd_start(message):
+    bot.reply_to(message, TEXT_START)
 
-@bot.message_handler(commands=['help'])
-def help_command(message):
-    bot.reply_to(message, "/start — перезапуск\n/help — справка\n/errors — список ошибок")
-
-@bot.message_handler(func=lambda m: m.text and m.text.startswith("http"))
+@bot.message_handler(func=lambda m: m.text and (m.text.startswith("http") or 'tiktok.com' in m.text))
 def handle_link(message):
-    url = message.text
-    user_links[message.from_user.id] = url
-
+    uid = message.from_user.id
+    chat = message.chat.id
+    user_links[uid] = message.text.strip()
+    user_selected_formats[uid] = set()
+    bot.send_message(chat, TEXT_ANALYZING)
     try:
-        info = get_info(url)
+        info = get_info(user_links[uid])
     except Exception as e:
-        bot.reply_to(message, f"Ошибка при получении информации: {e}")
+        bot.reply_to(message, f"⚠️ Ошибка при получении информации:\n```{e}```", parse_mode="Markdown")
         return
-
-    user_info[message.from_user.id] = info
+    user_info[uid] = info
     title = info.get('title', 'Без названия')
-
-    if info.get('_type') == 'playlist':
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("📥 Скачать весь плейлист", callback_data="download_playlist"))
-        markup.add(types.InlineKeyboardButton("❌ Отмена", callback_data="cancel_download"))
-        bot.reply_to(message, f"Это плейлист с {len(info.get('entries', []))} видео.\nВыберите действие:", reply_markup=markup)
-        return
-
-    video_qualities = sorted(set(f['height'] for f in info['formats'] if f.get('vcodec') != 'none' and f.get('height')))
-    audio_bitrates = sorted(set(int(f.get('abr')) for f in info['formats'] if f.get('acodec') != 'none' and f.get('abr')), reverse=True)
-    subtitles_available = bool(info.get('subtitles'))
-
-    markup = types.InlineKeyboardMarkup(row_width=2)
-
-    for height in video_qualities:
-        markup.add(types.InlineKeyboardButton(f"🎥 {height}p", callback_data=f"video_{height}"))
-
-    for abr in audio_bitrates:
-        markup.add(types.InlineKeyboardButton(f"🔊 {abr}k", callback_data=f"audio_{abr}k"))
-
-    if subtitles_available:
-        markup.add(types.InlineKeyboardButton("📝 Скачать субтитры", callback_data="download_subtitles"))
-
-    markup.add(
-        types.InlineKeyboardButton("📥 Всё (макс)", callback_data="all_best"),
-        types.InlineKeyboardButton("❌ Отмена", callback_data="cancel_download")
+    bot.send_message(
+        chat,
+        f"📋 *{title}*\nВыбери форматы для скачивания:",
+        parse_mode="Markdown",
+        reply_markup=make_format_buttons(info)
     )
 
-    bot.reply_to(message, f"🎬 *{title}*\nВыбери формат для загрузки:", parse_mode="Markdown", reply_markup=markup)
-
 @bot.callback_query_handler(func=lambda call: True)
-def handle_callback(call):
-    user_id = call.from_user.id
-    chat_id = call.message.chat.id
-    url = user_links.get(user_id)
-    info = user_info.get(user_id)
-
-    if call.data == "cancel_download":
-        bot.send_message(chat_id, "🚫 Отменено. Отправьте новую ссылку.")
-        user_links.pop(user_id, None)
-        user_info.pop(user_id, None)
+def callback_handler(call):
+    uid = call.from_user.id
+    chat = call.message.chat.id
+    data = call.data
+    info = user_info.get(uid)
+    if not info:
+        bot.send_message(chat, TEXT_FIRST_SEND_LINK)
         return
-
-    if not url or not info:
-        bot.send_message(chat_id, "Сначала отправьте ссылку на YouTube.")
+    sel = user_selected_formats.setdefault(uid, set())
+    if data == "cancel_download":
+        for d in (user_links, user_info, user_selected_formats, download_progress, user_subtitles_info):
+            d.pop( uid, None)
+        bot.edit_message_text(TEXT_CANCELLED, chat, call.message.message_id)
         return
-
-    title = info.get('title', 'Без названия')
-
-    try:
-        if call.data.startswith("video_"):
-            quality = call.data.split("_")[1]
-            format_str = f"bestvideo[height={quality}]+bestaudio/best"
-            bot.send_message(chat_id, f"⏳ Скачиваем видео {quality}p...")
-            path, folder = download_video(url, title, format_str)
-            thumb_url = get_thumbnail_url(info)
-            thumb_path = download_thumbnail(thumb_url) if thumb_url else None
-            with open(path, 'rb') as vid:
-                if thumb_path:
-                    with open(thumb_path, 'rb') as thumb:
-                        bot.send_video(chat_id, vid, caption=f"🎥 {title} ({quality}p)", thumb=thumb)
-                    os.remove(thumb_path)
+    if data == "download_subs":
+        subs = download_subtitles_info(user_links[uid])
+        if not subs:
+            bot.send_message(chat, "⚠️ Субтитры не найдены.")
+            return
+        user_subtitles_info[uid] = subs
+        bot.edit_message_text(
+            "🌐 Выберите язык субтитров или режим с таймкодом:",
+            chat,
+            call.message.message_id,
+            reply_markup=make_subtitles_buttons(subs)
+        )
+        return
+    if data.startswith("sub_lang_") or data == "sub_timed":
+        lang = data.split("_")[-1] if data.startswith("sub_lang_") else next(iter(user_subtitles_info.get(uid, {'en': None})))
+        timed = data == "sub_timed"
+        bot.send_message(
+            chat,
+            f"📝 Скачиваю субтитры ({'таймкодом' if timed else lang}) для *{info.get('title','')}*...",
+            parse_mode="Markdown"
+        )
+        threading.Thread(
+            target=download_subtitle_file,
+            args=(user_links[uid], lang, info.get('title',''), chat, timed)
+        ).start()
+        return
+    if data.startswith("toggle_"):
+        key = data.replace("toggle_", "")
+        if key in sel:
+            sel.remove(key)
+        else:
+            sel.add(key)
+        bot.edit_message_reply_markup(chat, call.message.message_id, reply_markup=make_format_buttons(info, sel))
+        return
+    if data == "download_selected":
+        if not sel:
+            bot.answer_callback_query(call.id, "⚠️ Выберите формат!")
+            return
+        title = info.get('title', '')
+        msg = bot.send_message(chat, "⬇️ Прогресс скачивания:\n(ожидание)").message_id
+        threading.Thread(target=update_progress_message_loop, args=(chat, msg, uid)).start()
+        def job():
+            files = download_selected_formats(user_links[uid], title, sel, chat, uid)
+            while any(p < 100 for p in download_progress.get(uid, {}).values()):
+                time.sleep(1)
+            for fpath in files:
+                if os.path.exists(fpath):
+                    with open(fpath, 'rb') as r:
+                        if fpath.endswith('.mp4'):
+                            bot.send_video(chat, r, caption=f"🎥 {title}")
+                        else:
+                            bot.send_audio(chat, r, caption=f"🔊 {title}")
+                    os.remove(fpath)
                 else:
-                    bot.send_video(chat_id, vid, caption=f"🎥 {title} ({quality}p)")
-            shutil.rmtree(folder)
-
-        elif call.data.startswith("audio_"):
-            abr = call.data.split("_")[1]
-            bot.send_message(chat_id, f"⏳ Скачиваем аудио {abr}...")
-            path, folder = download_audio(url, title, abr)
-            thumb_url = get_thumbnail_url(info)
-            thumb_path = download_thumbnail(thumb_url) if thumb_url else None
-            with open(path, 'rb') as aud:
-                if thumb_path:
-                    with open(thumb_path, 'rb') as thumb:
-                        bot.send_audio(chat_id, aud, caption=f"🔊 {title} ({abr})", thumb=thumb)
-                    os.remove(thumb_path)
-                else:
-                    bot.send_audio(chat_id, aud, caption=f"🔊 {title} ({abr})")
-            shutil.rmtree(folder)
-
-        elif call.data == "download_subtitles":
-            bot.send_message(chat_id, "⏳ Скачиваем субтитры...")
-            path, folder = download_subtitles(url, title)
-            if path:
-                with open(path, 'rb') as sub:
-                    bot.send_document(chat_id, sub, caption=f"📝 Субтитры: {title}")
-                shutil.rmtree(folder)
-            else:
-                bot.send_message(chat_id, "Субтитры не найдены.")
-
-        elif call.data == "all_best":
-            bot.send_message(chat_id, f"⏳ Скачиваем всё в лучшем качестве: {title}")
-            vpath, vfolder = download_video(url, title)
-            apath, afolder = download_audio(url, title)
-            thumb_url = get_thumbnail_url(info)
-            thumb_path = download_thumbnail(thumb_url) if thumb_url else None
-            with open(vpath, 'rb') as vid:
-                if thumb_path:
-                    with open(thumb_path, 'rb') as thumb:
-                        bot.send_video(chat_id, vid, caption=f"🎥 {title} (HD)", thumb=thumb)
-                    os.remove(thumb_path)
-                else:
-                    bot.send_video(chat_id, vid, caption=f"🎥 {title} (HD)")
-            with open(apath, 'rb') as aud:
-                if thumb_path is None:
-                    bot.send_audio(chat_id, aud, caption=f"🔊 {title}")
-                # если превью уже удалили - отправим без него
-                else:
-                    bot.send_audio(chat_id, aud, caption=f"🔊 {title}")
-            shutil.rmtree(vfolder)
-            shutil.rmtree(afolder)
-
-        elif call.data == "download_playlist":
-            bot.send_message(chat_id, "⏳ Скачиваем весь плейлист... Это может занять время.")
-            folder = tempfile.mkdtemp()
-            opts = {
-                'outtmpl': os.path.join(folder, '%(playlist_index)s - %(title)s.%(ext)s'),
-                'quiet': True,
-                'ignoreerrors': True,
-            }
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url])
-            archive_path = os.path.join(folder, "playlist.zip")
-            shutil.make_archive(os.path.splitext(archive_path)[0], 'zip', folder)
-            with open(archive_path, 'rb') as archive:
-                bot.send_document(chat_id, archive, caption=f"📥 Плейлист: {title}")
-            shutil.rmtree(folder)
-
-    except Exception as e:
-        bot.send_message(chat_id, f"⚠️ Ошибка при скачивании: {e}")
-        print(f"[{user_id}] Ошибка: {e}")
+                    bot.send_message(chat, f"⚠️ {os.path.basename(fpath)} не найден.")
+            try:
+                bot.delete_message(chat, msg)
+            except:
+                pass
+            bot.send_message(chat, "✅ Готово! Отправьте новую ссылку.")
+            for d in (user_links, user_info, user_selected_formats, download_progress, user_subtitles_info):
+                d.pop(uid, None)
+        threading.Thread(target=job).start()
 
 bot.polling()
