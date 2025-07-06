@@ -31,7 +31,7 @@ def safe_filename(name: str) -> str:
 def get_info(url: str) -> dict:
     opts = {'quiet': True}
     hostname = urlparse(url).hostname or ""
-    if hostname.endswith("tiktok.com"):
+    if hostname == "tiktok.com" or hostname.endswith(".tiktok.com"):
         opts.update({'extractor_retries': 1})
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False)
