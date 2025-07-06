@@ -1,12 +1,12 @@
 import telebot
 from telebot import types
-from urllib.parse import urlparse
 import yt_dlp
 import os
 import time
 import threading
+from urllib.parse import urlparse
 
-TOKEN = 'токен'
+TOKEN = '6576464104:AAEs8kZIQC2hCUZfc3YdJ_ISK4eCNCqgcNE'
 bot = telebot.TeleBot(TOKEN)
 
 BASE_TEMP_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_ddvx")
@@ -25,18 +25,16 @@ user_selected_formats = {}
 download_progress = {}
 user_subtitles_info = {}
 
-
 def safe_filename(name: str) -> str:
     return "".join(c for c in name if c.isalnum() or c in " .-_").rstrip()
 
-
 def get_info(url: str) -> dict:
     opts = {'quiet': True}
-    if 'tiktok.com' in url:
+    hostname = urlparse(url).hostname or ""
+    if hostname.endswith("tiktok.com"):
         opts.update({'extractor_retries': 1})
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False)
-
 
 def make_format_buttons(info: dict, selected: set = None) -> types.InlineKeyboardMarkup:
     selected = selected or set()
@@ -54,22 +52,20 @@ def make_format_buttons(info: dict, selected: set = None) -> types.InlineKeyboar
         txt = f"🔊{abr}k" + ("✅" if key in selected else "")
         markup.add(types.InlineKeyboardButton(txt, callback_data=f"toggle_{key}"))
     markup.add(
-        types.InlineKeyboardButton("📥 Скачать", callback_data="download_selected"),
+        types.InlineKeyboardButton("📅 Скачать", callback_data="download_selected"),
         types.InlineKeyboardButton(TEXT_CANCEL, callback_data="cancel_download")
     )
     return markup
-
 
 def make_subtitles_buttons(subs: dict) -> types.InlineKeyboardMarkup:
     markup = types.InlineKeyboardMarkup(row_width=2)
     for lang in subs.keys():
         markup.add(types.InlineKeyboardButton(f"🌐 {lang}", callback_data=f"sub_lang_{lang}"))
     markup.add(
-        types.InlineKeyboardButton("🕒 Скачать с таймкодом", callback_data="sub_timed"),
+        types.InlineKeyboardButton("🥒 Скачать с таймкодом", callback_data="sub_timed"),
         types.InlineKeyboardButton(TEXT_CANCEL, callback_data="cancel_download")
     )
     return markup
-
 
 def update_progress_message_loop(chat_id, message_id, user_id):
     while True:
@@ -88,7 +84,6 @@ def update_progress_message_loop(chat_id, message_id, user_id):
         if finished:
             break
 
-
 def download_with_progress(url, opts, chat_id, user_id, filename):
     def hook(d):
         status = d.get('status')
@@ -103,7 +98,6 @@ def download_with_progress(url, opts, chat_id, user_id, filename):
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([url])
     download_progress.setdefault(user_id, {})[filename] = 100
-
 
 def download_selected_formats(url: str, title: str, selected: set, chat_id, user_id):
     out_files = []
@@ -125,7 +119,6 @@ def download_selected_formats(url: str, title: str, selected: set, chat_id, user
         out_files.append(out_path)
     return out_files
 
-
 def download_subtitles_info(url: str) -> dict:
     with yt_dlp.YoutubeDL({'quiet':True,'skip_download':True}) as ydl:
         info = ydl.extract_info(url, download=False)
@@ -133,7 +126,6 @@ def download_subtitles_info(url: str) -> dict:
         **info.get('subtitles', {}),
         **info.get('automatic_captions', {})
     }
-
 
 def download_subtitle_file(url: str, lang: str, title: str, chat_id: int, timed: bool=False):
     base = os.path.join(BASE_TEMP_FOLDER, safe_filename(title) + f"_{lang}")
@@ -151,7 +143,7 @@ def download_subtitle_file(url: str, lang: str, title: str, chat_id: int, timed:
                 if "-->" in line or (line.strip() and not line.strip().isdigit()):
                     tf.write(line)
         with open(txt, 'rb') as f:
-            bot.send_document(chat_id, f, caption=f"🕒 Субтитры с таймкодом ({lang}) для {title}")
+            bot.send_document(chat_id, f, caption=f"🥒 Субтитры с таймкодом ({lang}) для {title}")
         os.remove(txt)
         os.remove(vtt)
     else:
@@ -163,7 +155,7 @@ def download_subtitle_file(url: str, lang: str, title: str, chat_id: int, timed:
 def cmd_start(message):
     bot.reply_to(message, TEXT_START)
 
-@bot.message_handler(func=lambda m: m.text and (m.text.startswith("http") or urlparse(m.text).hostname == "tiktok.com"))
+@bot.message_handler(func=lambda m: m.text and (m.text.startswith("http") or (urlparse(m.text).hostname and urlparse(m.text).hostname.endswith("tiktok.com"))))
 def handle_link(message):
     uid = message.from_user.id
     chat = message.chat.id
