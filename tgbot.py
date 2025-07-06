@@ -1,5 +1,6 @@
 import telebot
 from telebot import types
+from urllib.parse import urlparse
 import yt_dlp
 import os
 import time
@@ -162,7 +163,7 @@ def download_subtitle_file(url: str, lang: str, title: str, chat_id: int, timed:
 def cmd_start(message):
     bot.reply_to(message, TEXT_START)
 
-@bot.message_handler(func=lambda m: m.text and (m.text.startswith("http") or 'tiktok.com' in m.text))
+@bot.message_handler(func=lambda m: m.text and (m.text.startswith("http") or urlparse(m.text).hostname == "tiktok.com"))
 def handle_link(message):
     uid = message.from_user.id
     chat = message.chat.id
