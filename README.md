@@ -1,3 +1,15 @@
 # DVLA
 
-Мой старый бот телеграм на питоне который скачивает видео из ютуба инструкции особо не надо просто скачиваете библиотеки и запускаете и даете боту видео и он вам их кидает.
+Мой старый бот телеграм на питоне который скачивает видео из ютуба
+
+## Инструкция
+# Windows/Linux/MacOS
+```
+git clone https://github.com/XZY123lol/getytvideo-tg-dvla
+cd getytvideo-tg-dvla
+pip install -r requirements.txt
+python tgbot.py
+```
+
+> CAUTION
+> Убедитесь что у вас установлен FFMPEG
