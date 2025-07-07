@@ -11,5 +11,5 @@ pip install -r requirements.txt
 python tgbot.py
 ```
 
-> CAUTION
+> [!CAUTION]
 > Убедитесь что у вас установлен FFMPEG
