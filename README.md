@@ -3,7 +3,7 @@
 Мой старый бот телеграм на питоне который скачивает видео из ютуба
 
 ## Инструкция
-# Windows/Linux/MacOS
+# Windows/Linux/MacOS/Android(Termux)
 ```
 git clone https://github.com/XZY123lol/getytvideo-tg-dvla
 cd getytvideo-tg-dvla
