@@ -2,6 +2,9 @@
 
 Мой старый бот телеграм на питоне который скачивает видео из ютуба
 
+> [!CAUTION]
+> #F*CKYOUJETACAS (фишинг сайт)
+
 ## Инструкция
 # Windows/Linux/MacOS/Android(Termux)
 ```
